@@ -10,8 +10,6 @@ const state = {
   detailId: null,
 };
 
-// -------- API helpers --------
-
 async function api(path, opts = {}) {
   const headers = { "Content-Type": "application/json", ...(opts.headers || {}) };
   if (state.me) headers["X-User-Id"] = state.me.id;
@@ -34,8 +32,6 @@ const centsFromInput = (str) => {
   return Math.round(n * 100);
 };
 const userName = (id) => state.users.find((u) => u.id === id)?.name || id;
-
-// -------- Boot --------
 
 async function boot() {
   state.meta = await fetch("/api/meta").then((r) => r.json());
@@ -74,8 +70,6 @@ async function switchUser(id) {
   if (state.detailId) renderDetail();
 }
 
-// -------- Tabs --------
-
 function showTab(name) {
   document.querySelectorAll(".tab-panel").forEach((p) => p.classList.remove("active"));
   document.querySelectorAll("nav.tabs button").forEach((b) =>
@@ -83,12 +77,9 @@ function showTab(name) {
   );
   document.getElementById(`tab-${name}`).classList.add("active");
   if (name === "new" && !state.editing) {
-    // Fresh form
     resetForm();
   }
 }
-
-// -------- List --------
 
 async function refreshRequests() {
   state.requests = await api("/api/requests");
@@ -132,8 +123,6 @@ function renderList() {
   });
 }
 
-// -------- Form --------
-
 function currentFormValues() {
   const v = {};
   const f = document.getElementById("request-form");
@@ -142,13 +131,11 @@ function currentFormValues() {
   v.amountCents = amountRaw === "" ? null : centsFromInput(amountRaw);
   v.description = f.elements.description.value;
   v.billable = f.elements.billable.checked;
-  // Only include conditional fields when their gate says they apply.
   if (v.billable) v.client = f.elements.client.value || null;
   if (v.expenseType === "Other") v.otherReason = f.elements.otherReason.value;
   if (v.amountCents != null && Number.isFinite(v.amountCents) && v.amountCents >= state.meta.largeAmountCents) {
     v.additionalJustification = f.elements.additionalJustification.value;
   }
-  // Type-specific fields
   const typeSpec = (state.meta.typeFields || {})[v.expenseType] || [];
   typeSpec.forEach((field) => {
     if (f.elements[field.key]) v[field.key] = f.elements[field.key].value;
@@ -238,7 +225,6 @@ function updateConditionalVisibility(f) {
   f.querySelector('[data-field="otherReason"]').style.display = isOther ? "" : "none";
   f.querySelector('[data-field="additionalJustification"]').style.display = showJust ? "" : "none";
 
-  // Show only the type-specific fields for the selected expense type.
   const typeFields = state.meta.typeFields || {};
   Object.entries(typeFields).forEach(([type, fields]) => {
     fields.forEach((field) => {
@@ -333,8 +319,6 @@ async function saveForm(submitAfter) {
   }
 }
 
-// -------- Detail --------
-
 function openDetail(id) {
   state.detailId = id;
   showTab("detail");
@@ -369,10 +353,10 @@ async function renderDetail() {
     const when = new Date(ev.at).toLocaleString();
     let text = `<b>${ev.type}</b> by ${who} at ${when}`;
     if (ev.type === "submitted" && ev.approverId) text += ` → routed to ${userName(ev.approverId)}`;
+    if (ev.comment) text += `<div class="event-comment">"${escapeHtml(ev.comment)}"</div>`;
     return `<li>${text}</li>`;
   }).join("");
 
-  // Actions
   const actions = document.getElementById("detail-actions");
   actions.innerHTML = "";
   document.getElementById("detail-error").textContent = "";
@@ -413,8 +397,16 @@ function addAction(container, label, handler) {
 }
 
 async function decide(id, action) {
+  const promptText = action === "reject"
+    ? "Add a comment explaining the rejection (optional):"
+    : "Add a comment for this approval (optional):";
+  const comment = window.prompt(promptText, "");
+  if (comment === null) return; // user cancelled
   try {
-    await api(`/api/requests/${id}/${action}`, { method: "POST" });
+    await api(`/api/requests/${id}/${action}`, {
+      method: "POST",
+      body: JSON.stringify({ comment }),
+    });
     await refreshRequests();
     renderDetail();
   } catch (e) {

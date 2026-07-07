@@ -44,10 +44,6 @@ app = Flask(__name__, static_folder=None)
 _lock = threading.Lock()
 
 
-# ---------------------------------------------------------------------------
-# Store
-# ---------------------------------------------------------------------------
-
 def _load_json(name: str):
     with open(DATA_DIR / name) as f:
         return json.load(f)
@@ -79,7 +75,6 @@ def now_iso() -> str:
 
 
 def next_request_id() -> str:
-    # REQ-005, REQ-006, ...; skips non-numeric IDs and probes for collisions.
     existing = {r["id"] for r in REQUESTS}
     nums = []
     for rid in existing:
@@ -94,10 +89,6 @@ def next_request_id() -> str:
         candidate = f"REQ-{n:03d}"
     return candidate
 
-
-# ---------------------------------------------------------------------------
-# Derived state
-# ---------------------------------------------------------------------------
 
 def status_of(req: dict) -> str:
     """Status is the latest event's type, mapped to a status label."""
@@ -129,10 +120,6 @@ def with_derived(req: dict) -> dict:
     return r
 
 
-# ---------------------------------------------------------------------------
-# Validation
-# ---------------------------------------------------------------------------
-
 def validate_values(values: dict) -> dict[str, str]:
     """Return {field: message} for each rule violation. Empty dict = valid."""
     errors: dict[str, str] = {}
@@ -163,7 +150,6 @@ def validate_values(values: dict) -> dict[str, str]:
         elif client not in CLIENTS:
             errors["client"] = "Not a valid client."
 
-    # $1,000+ requires extra justification
     if isinstance(amount, int) and not isinstance(amount, bool) and amount >= LARGE_AMOUNT_CENTS:
         if not v.get("additionalJustification") or not str(v["additionalJustification"]).strip():
             errors["additionalJustification"] = "Extra justification is required for $1,000 or more."
@@ -197,10 +183,6 @@ def validate_values(values: dict) -> dict[str, str]:
     return errors
 
 
-# ---------------------------------------------------------------------------
-# Approver routing
-# ---------------------------------------------------------------------------
-
 def finance_user() -> dict | None:
     return next((u for u in USERS if u["role"] == "finance"), None)
 
@@ -221,10 +203,6 @@ def resolve_approver(requester: dict, amount_cents: int) -> tuple[str | None, st
     return None, "No eligible approver: the finance approver cannot approve their own request."
 
 
-# ---------------------------------------------------------------------------
-# Auth helper
-# ---------------------------------------------------------------------------
-
 def current_user() -> dict | None:
     return user_by_id(request.headers.get("X-User-Id") or request.args.get("as"))
 
@@ -235,10 +213,6 @@ def require_user():
         return None, (jsonify({"error": "Unknown or missing user (X-User-Id header)."}), 401)
     return u, None
 
-
-# ---------------------------------------------------------------------------
-# Routes — meta
-# ---------------------------------------------------------------------------
 
 @app.get("/api/meta")
 def meta():
@@ -271,10 +245,6 @@ def _test_reset():
     reset_store()
     return jsonify({"ok": True})
 
-
-# ---------------------------------------------------------------------------
-# Routes — requests
-# ---------------------------------------------------------------------------
 
 @app.get("/api/requests")
 def list_requests():
@@ -384,6 +354,9 @@ def _decide(rid: str, decision: str):
     if err:
         return err
     verb = _DECISION_VERBS[decision]
+    body = request.get_json(silent=True) or {}
+    raw_comment = body.get("comment")
+    comment = str(raw_comment).strip() if isinstance(raw_comment, str) else None
     with _lock:
         req = request_by_id(rid)
         if not req:
@@ -394,17 +367,16 @@ def _decide(rid: str, decision: str):
         if approver_id != user["id"]:
             return jsonify({"error": "Only the assigned approver can act on this request."}), 403
 
-        req["events"].append({
+        event = {
             "type": decision,
             "at": now_iso(),
             "actorId": user["id"],
-        })
+        }
+        if comment:
+            event["comment"] = comment
+        req["events"].append(event)
     return jsonify(with_derived(req))
 
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 _ALLOWED_VALUE_KEYS = {
     "expenseType", "amountCents", "description",
@@ -429,7 +401,7 @@ def _iso_date(s) -> bool:
 
 
 def _sanitize_values(values: dict) -> dict:
-    """Whitelist known fields; coerce billable to bool."""
+    """Whitelist known fields; coerce billable to bool. Drops conditional fields whose gates are off."""
     out = {}
     for k, v in (values or {}).items():
         if k in _ALLOWED_VALUE_KEYS:
@@ -437,7 +409,6 @@ def _sanitize_values(values: dict) -> dict:
                 out[k] = bool(v)
             else:
                 out[k] = v
-    # Drop conditional fields that don't apply — keeps the record clean.
     if not out.get("billable"):
         out.pop("client", None)
     if out.get("expenseType") != "Other":
@@ -445,17 +416,12 @@ def _sanitize_values(values: dict) -> dict:
     amt = out.get("amountCents")
     if not (isinstance(amt, int) and not isinstance(amt, bool) and amt >= LARGE_AMOUNT_CENTS):
         out.pop("additionalJustification", None)
-    # Drop type-specific fields that don't apply to the chosen expense type.
     etype = out.get("expenseType")
     keep_type_keys = {f["key"] for f in TYPE_FIELDS.get(etype, [])}
     for k in _TYPE_SPECIFIC_KEYS - keep_type_keys:
         out.pop(k, None)
     return out
 
-
-# ---------------------------------------------------------------------------
-# Static SPA
-# ---------------------------------------------------------------------------
 
 @app.get("/")
 def index():

@@ -60,3 +60,8 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 #detail-body dt { font-weight: 600; color: #555; }
 #detail-history { padding-left: 20px; }
 #detail-history li { margin-bottom: 4px; }
+#detail-history .event-comment {
+  margin: 4px 0 0 8px; padding: 4px 8px;
+  background: #f6f7f9; border-left: 3px solid #ccd;
+  color: #444; font-style: italic; white-space: pre-wrap;
+}

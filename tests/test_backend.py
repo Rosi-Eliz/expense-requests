@@ -328,6 +328,39 @@ def test_assigned_approver_can_reject(client):
     assert r["status"] == "Rejected"
 
 
+def test_approve_stores_optional_comment(client):
+    r = client.post(
+        "/api/requests/REQ-002/approve",
+        headers=as_("u_carol"),
+        json={"comment": "Looks fine, approving."},
+    ).get_json()
+    approved_event = r["events"][-1]
+    assert approved_event["type"] == "approved"
+    assert approved_event["comment"] == "Looks fine, approving."
+
+
+def test_reject_stores_optional_comment(client):
+    r = client.post(
+        "/api/requests/REQ-002/reject",
+        headers=as_("u_carol"),
+        json={"comment": "Please provide more detail and resubmit."},
+    ).get_json()
+    rejected_event = r["events"][-1]
+    assert rejected_event["type"] == "rejected"
+    assert rejected_event["comment"] == "Please provide more detail and resubmit."
+
+
+def test_approve_without_comment_omits_field(client):
+    """Whitespace-only / missing comment should not add a `comment` key to the event."""
+    r = client.post(
+        "/api/requests/REQ-002/approve",
+        headers=as_("u_carol"),
+        json={"comment": "   "},
+    ).get_json()
+    approved_event = r["events"][-1]
+    assert "comment" not in approved_event
+
+
 def test_cannot_approve_a_draft(client):
     r = client.post("/api/requests/REQ-001/approve", headers=as_("u_carol"))
     assert r.status_code == 409
@@ -474,7 +507,6 @@ def test_full_lifecycle_approve(client):
     assert approved["status"] == "Approved"
     assert [e["type"] for e in approved["events"]] == ["created", "submitted", "approved"]
 
-    # And it survives a re-read
     reread = client.get(f"/api/requests/{draft['id']}").get_json()
     assert reread["status"] == "Approved"
 
