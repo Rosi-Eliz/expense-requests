@@ -196,130 +196,112 @@ depending on whether it's a general or field-level problem.
 
 ## AI assistance
 
-I used Claude Code (this session) as a pair to draft the initial scaffolding —
-routes, the validation function, the SPA structure. Places where I pushed back
-or diverged from the AI's first take:
+I used Claude Code as a pair. It wrote most of the plumbing — routes, the SPA
+skeleton, the bulk of the tests. I drove the design and pushed back where its
+defaults didn't fit.
 
-- **Kept the store as two module-level lists** rather than a `Store` class the
-  AI initially suggested. The class was pure ceremony for a single-process
-  in-memory app — I only need a lock, not encapsulation.
-- **Derived status from events rather than storing a `status` field.** The AI's
-  first draft stored `status` explicitly and updated it alongside pushing
-  events. Deriving it eliminates the class of bug where the two get out of sync
-  and matches the spec's "status always matches the latest action" wording.
-  Multi-step routing extended this: instead of a mutable `chainIndex` on the
-  request, the current step is derived from the latest `submitted` event.
-- **Whitelisted `values` fields on write.** The AI's draft accepted the body's
-  `values` verbatim. Filtering to `_ALLOWED_VALUE_KEYS` prevents junk fields
-  from being persisted and prevents a client from setting anything meaningful
-  outside the schema.
-- **Amount stored as int cents throughout, with float rejection at the API
-  boundary.** The AI suggested "accept dollars, convert on the server." I
-  preferred a single unit end-to-end so nothing in the server has to think
-  about rounding.
-- **Toggle conditional-field visibility with direct DOM show/hide, not a
-  re-render.** The AI's first draft re-rendered the whole form on every gate
-  change, which stole focus mid-typing. Small UX detail but noticeable.
+A few concrete places I diverged from what it produced first:
 
-Relevant prompts and this session's transcript accompany the submission.
+- It reached for a `Store` class. For a single-process in-memory app with one
+  lock, that was ceremony — two module-level lists work fine and the lock is
+  right there next to the writes.
+- Its first draft stored a `status` field on the request and updated it
+  alongside pushing events. I asked to derive status from the event log
+  instead. Later the same call paid off for multi-step routing — I could keep
+  the chain state on the `submitted` event and avoid re-introducing a mutable
+  field.
+- The initial POST/PATCH handlers spread the request body's `values` verbatim.
+  I asked for a `_ALLOWED_VALUE_KEYS` whitelist so clients can't inject fields
+  that aren't part of the schema.
+- Amount handling started as "accept dollars, convert on the server." I moved
+  it to int cents end-to-end and rejected floats at the boundary — one unit,
+  no rounding anywhere in the middle.
+- The form initially re-rendered on every input change to update conditional
+  fields. That stole focus mid-typing. Switched it to direct show/hide on the
+  existing DOM.
+- Comments in the first draft explained a lot of *what* the code does. On the
+  polish pass I trimmed harder than it wanted to.
 
 ## Prompts I used
 
-A curated (lightly edited for brevity) list of the prompts that shaped the code.
-Roughly one per commit — the arc goes scaffold → core → tests → stretches →
-polish. The AI wrote a lot of the plumbing; I did the design calls, the
-pushbacks in the section above, and the merge decisions.
+Reconstructed from the session, not a verbatim transcript — the real thing had
+more back-and-forth, terse follow-ups ("that broke test X, fix"), and me
+correcting course mid-answer. But these capture the shape of what I asked for
+at each stage.
 
-**1. Scaffold — core spec only.**
-> Read the spec in `README.md` and build a minimal Flask + vanilla-JS
-> implementation. In-memory store seeded from `data/*.json`, JSON API,
-> single-page frontend, no build step. Auth is a trusted `X-User-Id`
-> header. Server enforces validation, permissions, status derivation,
-> and approver routing — the client should never be able to set status,
-> requesterId, approverId, or events. Do the *core* requirements only;
-> no stretches yet. Keep it under ~600 lines total.
+**Scaffold.**
+> Read `README.md` and build the core spec. Flask + vanilla JS, no build step,
+> in-memory store from `data/*.json`. `X-User-Id` header for auth. Server owns
+> validation, permissions, status, routing — client can't set status,
+> requesterId, approverId, or events. Core only, no stretches yet.
 
-**2. Backend test suite.**
-> Add a `tests/test_backend.py` using Flask's `test_client` and pytest.
-> Cover: every validation rule with a positive + negative case, every
-> permission check (owner-only edit/submit, approver-only decide),
-> approver routing including the finance-can't-approve-own edge case,
-> status derivation, and one full happy-path lifecycle per role. No
-> mocks — hit the in-memory store directly. Include a `_test_reset`
-> endpoint gated by `EXPENSE_TEST_MODE=1` so tests can reset between
-> cases without importing app internals.
+Follow-ups on this one were about trimming: drop the `Store` class, use cents
+not dollars, whitelist the `values` keys.
 
-**3. End-to-end frontend tests.**
-> Add `tests/test_frontend.py` using Playwright + pytest. Spawn the
-> Flask app as a subprocess on a free port with `EXPENSE_TEST_MODE=1`,
-> drive it in headless Chromium. Focus on things only the browser can
-> verify: conditional-field visibility on the form, inline error
-> rendering, the approver's Approve/Reject buttons only showing when
-> the header user matches `currentApproverId`. Don't retest backend
-> rules end-to-end; the backend suite owns those.
+**Backend tests.**
+> Add pytest tests against Flask's `test_client`. Cover the validation rules,
+> the permission checks, the routing (including finance-can't-approve-own),
+> and one full lifecycle. Hit the in-memory store directly, no mocks. Add a
+> `_test/reset` endpoint gated by an env var so tests don't need to import
+> app internals.
 
-**4. Stretch — type-specific fields.**
-> Add type-specific extra fields, kept in one place so the SPA and
-> server can't drift: Travel → destination + depart/return dates (with
-> return >= depart), Software → vendor + reason. Expose the schema via
-> `/api/meta.typeFields` and have the SPA render inputs from that.
-> Validate on the server too. `_sanitize_values` should drop fields
-> that belong to a *different* type so switching types on a draft
-> doesn't leave stale values behind.
+**Playwright tests.**
+> Add e2e tests that spawn the app as a subprocess and drive the SPA in
+> headless Chromium. Only cover things the browser is the source of truth
+> for — conditional fields showing/hiding, inline error rendering, the
+> Approve/Reject buttons only appearing for the current approver. Skip
+> anything the backend suite already covers.
 
-**5. Stretch — approver comments.**
-> Let approvers attach an optional `comment` string on approve/reject.
-> Store it on the event, render it inline in history. Trim whitespace
-> and drop empty strings so we don't persist "" as a real comment.
-> The frontend can use `window.prompt` — this is a demo, not a design
-> deliverable. (Follow-up: fix `test_approver_can_approve_from_detail`
-> which now hangs on the prompt dialog.)
+**Type-specific fields (stretch).**
+> Travel needs destination + depart/return dates (return >= depart). Software
+> needs vendor + a reason. Put the schema in one place so client and server
+> can't drift, expose it via `/api/meta`, and have `_sanitize_values` drop
+> fields that don't belong to the current type so switching type on a draft
+> doesn't leave stale values.
 
-**6. Stretch — fix-and-resubmit.**
-> A Rejected request should be reopen-able only by its owner, only via
-> a fix-and-resubmit flow. Allow PATCH on Rejected (in addition to
-> Draft), and allow /submit on Rejected. Resubmit must re-run
-> validation and *recompute* the approver from the current amount, so
-> bumping the amount across a threshold reroutes correctly. Keep the
-> full event history — the rejection stays visible in the audit trail.
-> Relabel the SPA buttons "Edit & Fix" / "Resubmit" when the status is
-> Rejected.
+**Approver comments (stretch).**
+> Optional comment on approve/reject, stored on the event. Trim and drop
+> empty strings. Frontend can use `window.prompt`, this is a demo. — Then a
+> follow-up when a Playwright test started hanging on the prompt dialog.
 
-**7. Stretch — multi-step approval.**
-> Requests of $5,000 or more should require manager THEN finance
-> sign-off. Constraint: don't add a mutable `status` field on the
-> request; keep deriving status from the event log. Idea to try:
-> the `submitted` event carries the full `approverChain` (list of
-> user IDs) and its `chainIndex`; when an intermediate approver
-> approves, append a fresh `submitted` event pointing at the next
-> approver. Status naturally stays "Submitted" until the last step.
-> Rejection at any step is terminal. Add tests for both single and
-> two-step chains, including reroute-on-resubmit across the $5,000
-> threshold.
+**Fix-and-resubmit (stretch).**
+> Rejected shouldn't be terminal. Owner can PATCH and re-submit. Resubmit
+> re-runs validation and recomputes the approver from the current amount, so
+> bumping across a threshold reroutes. Keep the rejection in history. Relabel
+> the buttons to "Edit & Fix" / "Resubmit" when the request is Rejected.
 
-**8. Polish + docs refresh.**
-> Read the whole codebase and remove comments that just restate the
-> code — I want the identifiers to do the explaining. Keep comments
-> that explain *why* (non-obvious constraints, subtle invariants, or
-> UX choices like focus preservation). Then rewrite NOTES.md to match
-> the current state: test counts, three-tier routing, updated API
-> surface, what shipped from the stretches. Don't leave stretches in
-> the "what I'd do next" list if they're already in.
+**Multi-step approval (stretch).**
+> $5,000+ should go manager → finance. Don't add a mutable status field on
+> the request. Try this: `submitted` event carries the full chain and an
+> index; when an intermediate step approves, append a new `submitted` event
+> pointing at the next approver. Status stays "Submitted" until the last one.
+> Rejection anywhere is terminal.
 
-**9. Conformance sanity check.**
-> Read the spec's core requirements list end-to-end and verify each
-> one against the current code. Cite file:line for the enforcement
-> point. Be honest about any gaps — including in the stretch items
-> we attempted. Don't just tell me it passes.
+Initial suggestion was a `chainIndex` field on the request itself — I asked
+to keep the derived-from-events invariant.
 
-### What I did *not* delegate to the AI
+**Polish + docs.**
+> Read the codebase and strip comments that just restate the code. Keep the
+> ones that explain *why* — non-obvious constraints, UX invariants like the
+> focus preservation on the form. Then rewrite NOTES.md to match reality:
+> test counts, three-tier routing, current API surface, which stretches
+> actually shipped.
 
-- Choosing the data model (event-sourced, derived status, no mutable `status` /
-  `currentApproverId` fields).
-- Choosing the multi-step approval mechanic (chain-in-submitted-event vs a
-  parallel chain table). The AI's first suggestion was a `chainIndex` field on
-  the request; I preferred keeping the derived-from-events invariant.
-- The API shape and error envelopes (`{error}` vs `{errors}` split).
-- Deciding which stretches to build and in what order.
-- Deciding when a comment restated the code (delete) vs explained a *why*
-  (keep). The AI erred toward keeping; I trimmed harder.
+**Conformance check.**
+> Go through the spec's core requirements list and check each one against
+> the code. Cite file:line. Don't just tell me it passes — flag anything
+> that's partial or missing.
+
+### What I did *not* delegate
+
+- The data model. Event-sourced, derived status, no mutable `status` or
+  `currentApproverId` fields — that call was mine and I re-applied it when
+  multi-step routing came along.
+- The multi-step chain mechanic. First AI suggestion was a `chainIndex` field
+  on the request. I preferred keeping the invariant that state lives in events.
+- The error envelope split (`{error}` vs `{errors: {field: msg}}`) and the
+  API shape more generally.
+- Which stretches to build and in what order.
+- Where the line was between a comment that earns its keep and one that just
+  narrates the code. The AI erred toward keeping; I trimmed harder on the
+  polish pass.
