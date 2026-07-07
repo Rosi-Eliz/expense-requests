@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Expense Requests</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header>
+    <h1>Expense Requests</h1>
+    <div class="user-picker">
+      <label>Acting as:
+        <select id="user-select"></select>
+      </label>
+      <span id="user-role" class="role"></span>
+    </div>
+  </header>
+
+  <nav class="tabs">
+    <button data-tab="list" class="active">Requests</button>
+    <button data-tab="new">New Request</button>
+  </nav>
+
+  <main>
+    <section id="tab-list" class="tab-panel active">
+      <div class="list-controls">
+        <label>Filter:
+          <select id="filter-status">
+            <option value="">All</option>
+            <option>Draft</option>
+            <option>Submitted</option>
+            <option>Approved</option>
+            <option>Rejected</option>
+          </select>
+        </label>
+        <label>
+          <input type="checkbox" id="filter-mine" />
+          Mine only
+        </label>
+        <label>
+          <input type="checkbox" id="filter-todo" />
+          Awaiting my approval
+        </label>
+      </div>
+      <table id="requests-table">
+        <thead>
+          <tr><th>ID</th><th>Requester</th><th>Type</th><th>Amount</th><th>Status</th><th>Approver</th><th></th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </section>
+
+    <section id="tab-new" class="tab-panel">
+      <h2 id="form-title">New Request</h2>
+      <form id="request-form"></form>
+      <div class="form-actions">
+        <button type="button" id="btn-save">Save Draft</button>
+        <button type="button" id="btn-submit">Submit</button>
+      </div>
+      <p id="form-error" class="error"></p>
+    </section>
+
+    <section id="tab-detail" class="tab-panel">
+      <button id="back-to-list">← Back</button>
+      <h2 id="detail-title"></h2>
+      <div id="detail-body"></div>
+      <h3>History</h3>
+      <ol id="detail-history"></ol>
+      <div id="detail-actions" class="form-actions"></div>
+      <p id="detail-error" class="error"></p>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
