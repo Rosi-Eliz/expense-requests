@@ -58,6 +58,14 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 
 #detail-body dl { display: grid; grid-template-columns: max-content 1fr; gap: 6px 12px; }
 #detail-body dt { font-weight: 600; color: #555; }
+#detail-body dd.chain { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.chain-step {
+  padding: 2px 8px; border-radius: 10px; font-size: 12px;
+  background: #eee; color: #555;
+}
+.chain-done { background: #d6f5df; color: #2a6d40; }
+.chain-current { background: #fff4d6; color: #7a5a00; font-weight: 600; }
+.chain-pending { background: #eee; color: #888; }
 #detail-history { padding-left: 20px; }
 #detail-history li { margin-bottom: 4px; }
 #detail-history .event-comment {

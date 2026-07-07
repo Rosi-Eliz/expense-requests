@@ -264,6 +264,32 @@ function escapeHtml(s) {
   }[c]));
 }
 
+function renderApprovalChainRow(r) {
+  // Find the most recent 'submitted' event's chain (multi-step routing carries it).
+  const lastSubmit = [...r.events].reverse().find((e) => e.type === "submitted");
+  const chain = lastSubmit && lastSubmit.approverChain;
+  if (!chain || chain.length < 2) return "";
+  const currentIdx = lastSubmit.chainIndex ?? 0;
+  const parts = chain.map((uid, i) => {
+    let mark = "…";
+    let cls = "chain-step";
+    if (r.status === "Approved") {
+      mark = "✓"; cls += " chain-done";
+    } else if (r.status === "Rejected") {
+      mark = i < currentIdx ? "✓" : (i === currentIdx ? "✕" : "…");
+      cls += i < currentIdx ? " chain-done" : (i === currentIdx ? " chain-current" : " chain-pending");
+    } else if (i < currentIdx) {
+      mark = "✓"; cls += " chain-done";
+    } else if (i === currentIdx) {
+      mark = "→"; cls += " chain-current";
+    } else {
+      cls += " chain-pending";
+    }
+    return `<span class="${cls}">${mark} ${escapeHtml(userName(uid))}</span>`;
+  });
+  return `<dt>Approval chain</dt><dd class="chain">${parts.join(" → ")}</dd>`;
+}
+
 function showFieldErrors(errors) {
   document.querySelectorAll(".field").forEach((el) => {
     el.classList.remove("has-error");
@@ -334,6 +360,7 @@ async function renderDetail() {
     .filter((field) => r.values[field.key])
     .map((field) => `<dt>${escapeHtml(field.label)}</dt><dd>${escapeHtml(String(r.values[field.key]))}</dd>`)
     .join("");
+  const chainRow = renderApprovalChainRow(r);
   body.innerHTML = `
     <dl>
       <dt>Status</dt><dd><span class="status status-${r.status}">${r.status}</span></dd>
@@ -344,6 +371,7 @@ async function renderDetail() {
       ${r.values.otherReason ? `<dt>Other reason</dt><dd>${escapeHtml(r.values.otherReason)}</dd>` : ""}
       ${r.values.additionalJustification ? `<dt>Extra justification</dt><dd>${escapeHtml(r.values.additionalJustification)}</dd>` : ""}
       ${typeRows}
+      ${chainRow}
       ${r.currentApproverId ? `<dt>Awaiting</dt><dd>${userName(r.currentApproverId)}</dd>` : ""}
     </dl>
   `;

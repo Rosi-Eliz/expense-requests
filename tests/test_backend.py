@@ -263,7 +263,7 @@ def test_small_amount_routes_to_manager(client):
 
 def test_large_amount_routes_to_finance(client):
     draft = create_draft(client, "u_alice", {
-        "expenseType": "Software", "amountCents": 500_000,
+        "expenseType": "Software", "amountCents": 200_000,
         "description": "big buy",
         "additionalJustification": "annual license",
         "vendor": "Acme Inc.", "softwareReason": "team-wide productivity tool",
@@ -282,9 +282,9 @@ def test_missing_manager_falls_back_to_finance(client):
 
 
 def test_finance_cannot_approve_own_large_request(client):
-    """Spec: if finance would also be the requester, submitting is refused."""
+    """Spec: if finance would also be the requester (single-step range), submitting is refused."""
     draft = create_draft(client, "u_trent", {
-        "expenseType": "Software", "amountCents": 500_000,
+        "expenseType": "Software", "amountCents": 200_000,
         "description": "tool", "additionalJustification": "needed",
         "vendor": "Acme Inc.", "softwareReason": "internal tooling",
     })
@@ -627,3 +627,122 @@ def test_cannot_edit_approved_request_still_rejected(client):
         headers=as_("u_bob"),
     )
     assert r.status_code == 409
+
+
+# ---------------------------------------------------------------------------
+# Multi-step approval (>= $5,000: manager THEN finance)
+# ---------------------------------------------------------------------------
+
+def _make_very_large_draft(client, requester="u_alice") -> dict:
+    return create_draft(client, requester, {
+        "expenseType": "Software", "amountCents": 600_000,
+        "description": "server refresh",
+        "additionalJustification": "hardware EOL, budgeted for FY26",
+        "vendor": "Acme Inc.", "softwareReason": "shared build infra",
+    })
+
+
+def test_meta_exposes_very_large_threshold(client):
+    body = client.get("/api/meta").get_json()
+    assert body["veryLargeAmountCents"] == 500_000
+
+
+def test_very_large_amount_routes_to_manager_first(client):
+    draft = _make_very_large_draft(client)
+    r = client.post(f"/api/requests/{draft['id']}/submit", headers=as_("u_alice")).get_json()
+    assert r["status"] == "Submitted"
+    # First step: manager (Alice's manager is Carol).
+    assert r["currentApproverId"] == "u_carol"
+    last_submit = [e for e in r["events"] if e["type"] == "submitted"][-1]
+    assert last_submit["approverChain"] == ["u_carol", "u_trent"]
+    assert last_submit["chainIndex"] == 0
+
+
+def test_multi_step_manager_approval_advances_to_finance(client):
+    """After the manager approves, the request stays Submitted awaiting finance."""
+    draft = _make_very_large_draft(client)
+    client.post(f"/api/requests/{draft['id']}/submit", headers=as_("u_alice"))
+    r = client.post(f"/api/requests/{draft['id']}/approve", headers=as_("u_carol")).get_json()
+    assert r["status"] == "Submitted"
+    assert r["currentApproverId"] == "u_trent"
+    types = [e["type"] for e in r["events"]]
+    assert types == ["created", "submitted", "approved", "submitted"]
+    last_submit = r["events"][-1]
+    assert last_submit["approverChain"] == ["u_carol", "u_trent"]
+    assert last_submit["chainIndex"] == 1
+
+
+def test_multi_step_finance_cannot_approve_before_manager(client):
+    draft = _make_very_large_draft(client)
+    client.post(f"/api/requests/{draft['id']}/submit", headers=as_("u_alice"))
+    # Trent (finance) tries to skip ahead.
+    r = client.post(f"/api/requests/{draft['id']}/approve", headers=as_("u_trent"))
+    assert r.status_code == 403
+
+
+def test_multi_step_full_approval_marks_approved(client):
+    draft = _make_very_large_draft(client)
+    client.post(f"/api/requests/{draft['id']}/submit", headers=as_("u_alice"))
+    client.post(f"/api/requests/{draft['id']}/approve", headers=as_("u_carol"))
+    r = client.post(f"/api/requests/{draft['id']}/approve", headers=as_("u_trent")).get_json()
+    assert r["status"] == "Approved"
+    types = [e["type"] for e in r["events"]]
+    assert types == ["created", "submitted", "approved", "submitted", "approved"]
+
+
+def test_multi_step_manager_rejection_ends_chain(client):
+    """A rejection at any step is final; finance never sees the request."""
+    draft = _make_very_large_draft(client)
+    client.post(f"/api/requests/{draft['id']}/submit", headers=as_("u_alice"))
+    r = client.post(
+        f"/api/requests/{draft['id']}/reject",
+        headers=as_("u_carol"),
+        json={"comment": "Not this quarter."},
+    ).get_json()
+    assert r["status"] == "Rejected"
+    types = [e["type"] for e in r["events"]]
+    assert types == ["created", "submitted", "rejected"]
+
+
+def test_multi_step_finance_rejection_after_manager_approval(client):
+    draft = _make_very_large_draft(client)
+    client.post(f"/api/requests/{draft['id']}/submit", headers=as_("u_alice"))
+    client.post(f"/api/requests/{draft['id']}/approve", headers=as_("u_carol"))
+    r = client.post(f"/api/requests/{draft['id']}/reject", headers=as_("u_trent")).get_json()
+    assert r["status"] == "Rejected"
+    types = [e["type"] for e in r["events"]]
+    assert types == ["created", "submitted", "approved", "submitted", "rejected"]
+
+
+def test_multi_step_dedup_when_manager_is_finance(client):
+    """Edge case: if the requester's manager is finance, the chain collapses to one step."""
+    # Trent (finance) has manager Peggy; Peggy has no manager. Make Peggy submit a
+    # very-large request — her manager is None, so chain should just be [u_trent].
+    draft = create_draft(client, "u_peggy", {
+        "expenseType": "Software", "amountCents": 600_000,
+        "description": "vendor onboarding",
+        "additionalJustification": "board-approved",
+        "vendor": "Acme Inc.", "softwareReason": "org-wide rollout",
+    })
+    r = client.post(f"/api/requests/{draft['id']}/submit", headers=as_("u_peggy")).get_json()
+    assert r["currentApproverId"] == "u_trent"
+    last_submit = r["events"][-1]
+    assert last_submit["approverChain"] == ["u_trent"]
+
+
+def test_multi_step_no_eligible_approver_when_requester_has_no_manager_and_is_finance(client):
+    """A finance user with no manager submitting a very-large request has no chain."""
+    # Temporarily null out Trent's manager to simulate this case.
+    trent = next(u for u in app_module.USERS if u["id"] == "u_trent")
+    original = trent["managerId"]
+    trent["managerId"] = None
+    try:
+        draft = create_draft(client, "u_trent", {
+            "expenseType": "Software", "amountCents": 600_000,
+            "description": "tool", "additionalJustification": "needed",
+            "vendor": "Acme Inc.", "softwareReason": "internal",
+        })
+        r = client.post(f"/api/requests/{draft['id']}/submit", headers=as_("u_trent"))
+        assert r.status_code == 409
+    finally:
+        trent["managerId"] = original

@@ -25,6 +25,7 @@ STATIC_DIR = ROOT / "static"
 CLIENTS = ["Acme", "Globex", "Initech", "Umbrella", "Wayne Enterprises"]
 EXPENSE_TYPES = ["Travel", "Software", "Equipment", "Meal", "Other"]
 LARGE_AMOUNT_CENTS = 100_000  # $1,000 threshold for finance routing / extra justification
+VERY_LARGE_AMOUNT_CENTS = 500_000  # $5,000 threshold for multi-step approval (manager + finance)
 
 # Per-expense-type extra fields. Rendered by the SPA, validated on the server.
 # Keeping the schema in one place so the two sides can't drift.
@@ -113,6 +114,13 @@ def current_approver(req: dict) -> str | None:
     return None
 
 
+def last_submitted_event(req: dict) -> dict | None:
+    for ev in reversed(req["events"]):
+        if ev["type"] == "submitted":
+            return ev
+    return None
+
+
 def with_derived(req: dict) -> dict:
     r = dict(req)
     r["status"] = status_of(req)
@@ -187,20 +195,38 @@ def finance_user() -> dict | None:
     return next((u for u in USERS if u["role"] == "finance"), None)
 
 
-def resolve_approver(requester: dict, amount_cents: int) -> tuple[str | None, str | None]:
-    """Return (approverId, error). Falls back to finance when needed."""
-    finance = finance_user()
+def approval_chain(requester: dict, amount_cents: int) -> tuple[list[str], str | None]:
+    """Return (chain, error). Chain is the ordered list of approver IDs.
 
-    if amount_cents < LARGE_AMOUNT_CENTS:
-        manager_id = requester.get("managerId")
-        # Fall back to finance if no manager or the manager IS the requester
-        if manager_id and manager_id != requester["id"]:
-            return manager_id, None
-        # fall through to finance
-    # Large amount, or fallback case
-    if finance and finance["id"] != requester["id"]:
-        return finance["id"], None
-    return None, "No eligible approver: the finance approver cannot approve their own request."
+    Routing rules:
+      < $1,000  → manager (or finance fallback)
+      ≥ $1,000  → finance only
+      ≥ $5,000  → manager THEN finance (two-step)
+
+    An approver who is the requester is skipped; if the chain would end up
+    empty, an error is returned instead.
+    """
+    finance = finance_user()
+    manager_id = requester.get("managerId")
+    manager_valid = bool(manager_id) and manager_id != requester["id"]
+    finance_valid = bool(finance) and finance["id"] != requester["id"]
+
+    if amount_cents >= VERY_LARGE_AMOUNT_CENTS:
+        chain: list[str] = []
+        if manager_valid:
+            chain.append(manager_id)
+        if finance_valid and (not chain or chain[-1] != finance["id"]):
+            chain.append(finance["id"])
+        if not chain:
+            return [], "No eligible approver for a very large amount."
+        return chain, None
+
+    if amount_cents < LARGE_AMOUNT_CENTS and manager_valid:
+        return [manager_id], None
+
+    if finance_valid:
+        return [finance["id"]], None
+    return [], "No eligible approver: the finance approver cannot approve their own request."
 
 
 def current_user() -> dict | None:
@@ -220,6 +246,7 @@ def meta():
         "expenseTypes": EXPENSE_TYPES,
         "clients": CLIENTS,
         "largeAmountCents": LARGE_AMOUNT_CENTS,
+        "veryLargeAmountCents": VERY_LARGE_AMOUNT_CENTS,
         "typeFields": TYPE_FIELDS,
     })
 
@@ -327,7 +354,7 @@ def submit_request(rid: str):
         if errors:
             return jsonify({"errors": errors}), 400
 
-        approver_id, routing_err = resolve_approver(user, req["values"]["amountCents"])
+        chain, routing_err = approval_chain(user, req["values"]["amountCents"])
         if routing_err:
             return jsonify({"error": routing_err}), 409
 
@@ -335,7 +362,9 @@ def submit_request(rid: str):
             "type": "submitted",
             "at": now_iso(),
             "actorId": user["id"],
-            "approverId": approver_id,
+            "approverId": chain[0],
+            "approverChain": chain,
+            "chainIndex": 0,
         })
     return jsonify(with_derived(req))
 
@@ -380,6 +409,23 @@ def _decide(rid: str, decision: str):
         if comment:
             event["comment"] = comment
         req["events"].append(event)
+
+        # Multi-step chains: if this approval leaves more steps in the chain,
+        # append a fresh 'submitted' event routing to the next approver so
+        # status stays "Submitted" and current_approver() picks up the next hop.
+        if decision == "approved":
+            last_submit = last_submitted_event(req)
+            chain = (last_submit or {}).get("approverChain") or []
+            idx = (last_submit or {}).get("chainIndex", 0)
+            if chain and idx + 1 < len(chain):
+                req["events"].append({
+                    "type": "submitted",
+                    "at": now_iso(),
+                    "actorId": user["id"],
+                    "approverId": chain[idx + 1],
+                    "approverChain": chain,
+                    "chainIndex": idx + 1,
+                })
     return jsonify(with_derived(req))
 
 
