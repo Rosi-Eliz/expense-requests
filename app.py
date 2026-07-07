@@ -284,7 +284,7 @@ def create_request():
 
 @app.patch("/api/requests/<rid>")
 def update_request(rid: str):
-    """Owner-only, Draft-only edit of `values`."""
+    """Owner-only edit of `values`. Allowed while Draft or after Rejection (fix-and-resubmit)."""
     user, err = require_user()
     if err:
         return err
@@ -294,7 +294,7 @@ def update_request(rid: str):
             return jsonify({"error": "Not found"}), 404
         if req["requesterId"] != user["id"]:
             return jsonify({"error": "Only the requester can edit this request."}), 403
-        if status_of(req) != "Draft":
+        if status_of(req) not in ("Draft", "Rejected"):
             return jsonify({"error": f"Cannot edit a {status_of(req)} request."}), 409
 
         body = request.get_json(silent=True) or {}
@@ -305,7 +305,12 @@ def update_request(rid: str):
 
 @app.post("/api/requests/<rid>/submit")
 def submit_request(rid: str):
-    """Validate, compute approver server-side, append 'submitted' event."""
+    """Validate, compute approver server-side, append 'submitted' event.
+
+    Allowed on Draft (first submit) and on Rejected (fix-and-resubmit). The
+    resubmit path keeps the full event history — including the rejection —
+    so the audit trail is intact and the approver is re-routed by amount.
+    """
     user, err = require_user()
     if err:
         return err
@@ -315,7 +320,7 @@ def submit_request(rid: str):
             return jsonify({"error": "Not found"}), 404
         if req["requesterId"] != user["id"]:
             return jsonify({"error": "Only the requester can submit."}), 403
-        if status_of(req) != "Draft":
+        if status_of(req) not in ("Draft", "Rejected"):
             return jsonify({"error": f"Cannot submit a {status_of(req)} request."}), 409
 
         errors = validate_values(req["values"])

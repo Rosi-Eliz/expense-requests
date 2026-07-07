@@ -521,3 +521,109 @@ def test_full_lifecycle_reject(client):
         f"/api/requests/{draft['id']}/reject", headers=as_("u_trent")
     ).get_json()
     assert rejected["status"] == "Rejected"
+
+
+# ---------------------------------------------------------------------------
+# Fix-and-resubmit (Rejected → edit → resubmit)
+# ---------------------------------------------------------------------------
+
+def _make_rejected(client) -> dict:
+    draft = create_draft(client, "u_alice", {
+        "expenseType": "Meal", "amountCents": 2500,
+        "description": "team lunch",
+    })
+    client.post(f"/api/requests/{draft['id']}/submit", headers=as_("u_alice"))
+    client.post(
+        f"/api/requests/{draft['id']}/reject",
+        headers=as_("u_carol"),
+        json={"comment": "Please add attendees."},
+    )
+    return draft
+
+
+def test_owner_can_edit_rejected_request(client):
+    draft = _make_rejected(client)
+    r = client.patch(
+        f"/api/requests/{draft['id']}",
+        json={"values": {
+            "expenseType": "Meal", "amountCents": 2500,
+            "description": "team lunch (Alice, Bob, Carol)",
+        }},
+        headers=as_("u_alice"),
+    )
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["status"] == "Rejected"
+    assert body["values"]["description"] == "team lunch (Alice, Bob, Carol)"
+
+
+def test_non_owner_cannot_edit_rejected_request(client):
+    draft = _make_rejected(client)
+    r = client.patch(
+        f"/api/requests/{draft['id']}",
+        json={"values": {"description": "hax"}},
+        headers=as_("u_bob"),
+    )
+    assert r.status_code == 403
+
+
+def test_owner_can_resubmit_rejected_request(client):
+    """Resubmit appends a new 'submitted' event, keeping full history."""
+    draft = _make_rejected(client)
+    client.patch(
+        f"/api/requests/{draft['id']}",
+        json={"values": {
+            "expenseType": "Meal", "amountCents": 2500,
+            "description": "team lunch (Alice, Bob, Carol)",
+        }},
+        headers=as_("u_alice"),
+    )
+    resubmitted = client.post(
+        f"/api/requests/{draft['id']}/submit", headers=as_("u_alice")
+    ).get_json()
+    assert resubmitted["status"] == "Submitted"
+    types = [e["type"] for e in resubmitted["events"]]
+    assert types == ["created", "submitted", "rejected", "submitted"]
+    # Rejection comment is preserved in history.
+    rejected_event = next(e for e in resubmitted["events"] if e["type"] == "rejected")
+    assert rejected_event["comment"] == "Please add attendees."
+
+
+def test_resubmit_reroutes_approver_by_current_amount(client):
+    """Bumping the amount past the threshold on resubmit re-routes to finance."""
+    draft = _make_rejected(client)
+    # Original amount was $25; bump it above the $1,000 threshold and add justification.
+    client.patch(
+        f"/api/requests/{draft['id']}",
+        json={"values": {
+            "expenseType": "Meal",
+            "amountCents": 150_000,
+            "description": "team dinner with clients",
+            "additionalJustification": "Client entertainment; approved by account lead.",
+        }},
+        headers=as_("u_alice"),
+    )
+    resubmitted = client.post(
+        f"/api/requests/{draft['id']}/submit", headers=as_("u_alice")
+    ).get_json()
+    assert resubmitted["status"] == "Submitted"
+    # u_carol is manager (small-amount route); u_trent is finance (large-amount route).
+    assert resubmitted["currentApproverId"] == "u_trent"
+
+
+def test_non_owner_cannot_resubmit_rejected_request(client):
+    draft = _make_rejected(client)
+    r = client.post(
+        f"/api/requests/{draft['id']}/submit", headers=as_("u_bob")
+    )
+    assert r.status_code == 403
+
+
+def test_cannot_edit_approved_request_still_rejected(client):
+    """Sanity: approved is still terminal — fix-and-resubmit only unblocks Rejected."""
+    r = client.patch(
+        "/api/requests/REQ-003",
+        json={"values": {"description": "hax"}},
+        headers=as_("u_bob"),
+    )
+    assert r.status_code == 409

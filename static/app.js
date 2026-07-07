@@ -360,17 +360,20 @@ async function renderDetail() {
   const actions = document.getElementById("detail-actions");
   actions.innerHTML = "";
   document.getElementById("detail-error").textContent = "";
-  const canEdit = r.status === "Draft" && r.requesterId === state.me.id;
+  const canEdit = (r.status === "Draft" || r.status === "Rejected") && r.requesterId === state.me.id;
   const canDecide = r.status === "Submitted" && r.currentApproverId === state.me.id;
 
   if (canEdit) {
-    addAction(actions, "Edit", () => {
+    const editLabel = r.status === "Rejected" ? "Edit & Fix" : "Edit";
+    const submitLabel = r.status === "Rejected" ? "Resubmit" : "Submit";
+    addAction(actions, editLabel, () => {
       state.editing = r;
-      document.getElementById("form-title").textContent = `Editing ${r.id}`;
+      document.getElementById("form-title").textContent =
+        r.status === "Rejected" ? `Fixing ${r.id}` : `Editing ${r.id}`;
       renderForm();
       showTab("new");
     });
-    addAction(actions, "Submit", async () => {
+    addAction(actions, submitLabel, async () => {
       try {
         await api(`/api/requests/${r.id}/submit`, { method: "POST" });
         await refreshRequests();
