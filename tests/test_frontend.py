@@ -253,6 +253,7 @@ def test_approver_can_approve_from_detail(page, server_url):
     page.locator("#requests-table tbody tr", has_text="REQ-002").click()
     wait_for_detail(page, "REQ-002")
     page.wait_for_selector("#detail-actions button")
+    page.on("dialog", lambda d: d.accept(""))
     page.locator("#detail-actions button", has_text="Approve").click()
     page.wait_for_function(
         "() => document.querySelector('#detail-body').innerText.includes('Approved')"

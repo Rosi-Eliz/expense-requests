@@ -1,12 +1,12 @@
 // Expense Requests — vanilla JS SPA.
-// The server owns validation; here we mirror rules for UX and show server errors verbatim.
+// The server owns validation; we mirror rules only for UX and show server errors verbatim.
 
 const state = {
   meta: null,
   users: [],
   me: null,
   requests: [],
-  editing: null,   // request object when editing, else null
+  editing: null,
   detailId: null,
 };
 
@@ -265,7 +265,6 @@ function escapeHtml(s) {
 }
 
 function renderApprovalChainRow(r) {
-  // Find the most recent 'submitted' event's chain (multi-step routing carries it).
   const lastSubmit = [...r.events].reverse().find((e) => e.type === "submitted");
   const chain = lastSubmit && lastSubmit.approverChain;
   if (!chain || chain.length < 2) return "";
@@ -432,7 +431,7 @@ async function decide(id, action) {
     ? "Add a comment explaining the rejection (optional):"
     : "Add a comment for this approval (optional):";
   const comment = window.prompt(promptText, "");
-  if (comment === null) return; // user cancelled
+  if (comment === null) return;
   try {
     await api(`/api/requests/${id}/${action}`, {
       method: "POST",

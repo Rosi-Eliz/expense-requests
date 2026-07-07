@@ -21,14 +21,14 @@ ROOT = Path(__file__).parent
 DATA_DIR = ROOT / "data"
 STATIC_DIR = ROOT / "static"
 
-# Hardcoded client list — spec allows this; Acme must be present for seed data.
+# Acme must be present for seed data.
 CLIENTS = ["Acme", "Globex", "Initech", "Umbrella", "Wayne Enterprises"]
 EXPENSE_TYPES = ["Travel", "Software", "Equipment", "Meal", "Other"]
-LARGE_AMOUNT_CENTS = 100_000  # $1,000 threshold for finance routing / extra justification
-VERY_LARGE_AMOUNT_CENTS = 500_000  # $5,000 threshold for multi-step approval (manager + finance)
+LARGE_AMOUNT_CENTS = 100_000       # $1,000 — extra justification + finance routing
+VERY_LARGE_AMOUNT_CENTS = 500_000  # $5,000 — two-step: manager THEN finance
 
-# Per-expense-type extra fields. Rendered by the SPA, validated on the server.
-# Keeping the schema in one place so the two sides can't drift.
+# Type-specific extra fields. Rendered by the SPA, validated on the server;
+# keeping the schema in one place stops the two sides from drifting.
 TYPE_FIELDS: dict[str, list[dict]] = {
     "Travel": [
         {"key": "destination", "label": "Destination", "type": "text"},
@@ -55,7 +55,6 @@ REQUESTS: list[dict] = _load_json("requests.json")
 
 
 def reset_store() -> None:
-    """Re-seed USERS and REQUESTS from data/*.json. Used by tests."""
     global USERS, REQUESTS
     USERS[:] = _load_json("users.json")
     REQUESTS[:] = _load_json("requests.json")
@@ -92,7 +91,6 @@ def next_request_id() -> str:
 
 
 def status_of(req: dict) -> str:
-    """Status is the latest event's type, mapped to a status label."""
     if not req["events"]:
         return "Draft"
     last = req["events"][-1]["type"]
@@ -105,13 +103,10 @@ def status_of(req: dict) -> str:
 
 
 def current_approver(req: dict) -> str | None:
-    """Approver from the most recent 'submitted' event, if still pending."""
     if status_of(req) != "Submitted":
         return None
-    for ev in reversed(req["events"]):
-        if ev["type"] == "submitted":
-            return ev.get("approverId")
-    return None
+    submit = last_submitted_event(req)
+    return submit.get("approverId") if submit else None
 
 
 def last_submitted_event(req: dict) -> dict | None:
@@ -198,13 +193,12 @@ def finance_user() -> dict | None:
 def approval_chain(requester: dict, amount_cents: int) -> tuple[list[str], str | None]:
     """Return (chain, error). Chain is the ordered list of approver IDs.
 
-    Routing rules:
+    Routing:
       < $1,000  → manager (or finance fallback)
       ≥ $1,000  → finance only
-      ≥ $5,000  → manager THEN finance (two-step)
+      ≥ $5,000  → manager THEN finance
 
-    An approver who is the requester is skipped; if the chain would end up
-    empty, an error is returned instead.
+    An approver who is the requester is skipped; an empty chain returns an error.
     """
     finance = finance_user()
     manager_id = requester.get("managerId")
@@ -266,7 +260,6 @@ def me():
 
 @app.post("/api/_test/reset")
 def _test_reset():
-    """Reset the in-memory store to seed data. Only enabled when EXPENSE_TEST_MODE=1."""
     if os.environ.get("EXPENSE_TEST_MODE") != "1":
         return jsonify({"error": "Not found"}), 404
     reset_store()
@@ -275,7 +268,6 @@ def _test_reset():
 
 @app.get("/api/requests")
 def list_requests():
-    """List all requests with derived fields. Client can filter in the UI."""
     return jsonify([with_derived(r) for r in REQUESTS])
 
 
@@ -334,9 +326,8 @@ def update_request(rid: str):
 def submit_request(rid: str):
     """Validate, compute approver server-side, append 'submitted' event.
 
-    Allowed on Draft (first submit) and on Rejected (fix-and-resubmit). The
-    resubmit path keeps the full event history — including the rejection —
-    so the audit trail is intact and the approver is re-routed by amount.
+    Allowed on Draft and Rejected (fix-and-resubmit). Resubmit preserves the
+    full event history including the rejection and reroutes by current amount.
     """
     user, err = require_user()
     if err:
@@ -410,9 +401,9 @@ def _decide(rid: str, decision: str):
             event["comment"] = comment
         req["events"].append(event)
 
-        # Multi-step chains: if this approval leaves more steps in the chain,
-        # append a fresh 'submitted' event routing to the next approver so
-        # status stays "Submitted" and current_approver() picks up the next hop.
+        # Multi-step chain: append a fresh 'submitted' event routing to the
+        # next approver so status stays "Submitted" and current_approver()
+        # picks up the next hop.
         if decision == "approved":
             last_submit = last_submitted_event(req)
             chain = (last_submit or {}).get("approverChain") or []
@@ -432,9 +423,8 @@ def _decide(rid: str, decision: str):
 _ALLOWED_VALUE_KEYS = {
     "expenseType", "amountCents", "description",
     "billable", "client", "additionalJustification", "otherReason",
-    # Type-specific fields (see TYPE_FIELDS)
-    "destination", "departDate", "returnDate",  # Travel
-    "vendor", "softwareReason",                 # Software
+    "destination", "departDate", "returnDate",
+    "vendor", "softwareReason",
 }
 
 
@@ -452,7 +442,7 @@ def _iso_date(s) -> bool:
 
 
 def _sanitize_values(values: dict) -> dict:
-    """Whitelist known fields; coerce billable to bool. Drops conditional fields whose gates are off."""
+    """Whitelist known fields and drop conditional fields whose gates are off."""
     out = {}
     for k, v in (values or {}).items():
         if k in _ALLOWED_VALUE_KEYS:
