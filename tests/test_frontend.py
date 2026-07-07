@@ -109,9 +109,18 @@ def _user_id_for(name: str) -> str:
 
 def go_home(page, base: str) -> None:
     page.goto(base)
-    page.wait_for_selector("#user-select option")
+    # Options aren't visible in a closed select; wait for them to attach.
+    page.wait_for_selector("#user-select option", state="attached")
     # Wait for the initial request load so tests can query rows immediately
     page.wait_for_selector("#requests-table tbody tr")
+
+
+def wait_for_detail(page, request_id: str) -> None:
+    """Wait for the detail view to show the given request id in its title."""
+    page.wait_for_selector("#tab-detail.active")
+    page.wait_for_function(
+        f"() => document.querySelector('#detail-title')?.textContent?.includes('{request_id}')"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -212,7 +221,14 @@ def test_create_and_submit_routes_to_manager(page, server_url):
     page.locator("textarea[name=description]").fill("Team lunch")
     page.locator("#btn-submit").click()
     # Detail view appears with Submitted status and Carol as approver
-    page.wait_for_selector("#tab-detail.active")
+    try:
+        page.wait_for_selector("#tab-detail.active", timeout=5000)
+    except Exception:
+        form_error = page.locator("#form-error").inner_text()
+        field_errors = page.locator(".field-error").all_inner_texts()
+        raise AssertionError(
+            f"Detail never opened. form-error={form_error!r} field-errors={field_errors}"
+        )
     detail = page.locator("#detail-body").inner_text()
     assert "Submitted" in detail
     assert "Carol" in detail
@@ -235,7 +251,8 @@ def test_approver_can_approve_from_detail(page, server_url):
     go_home(page, server_url)
     act_as(page, "Carol")
     page.locator("#requests-table tbody tr", has_text="REQ-002").click()
-    page.wait_for_selector("#tab-detail.active")
+    wait_for_detail(page, "REQ-002")
+    page.wait_for_selector("#detail-actions button")
     page.locator("#detail-actions button", has_text="Approve").click()
     page.wait_for_function(
         "() => document.querySelector('#detail-body').innerText.includes('Approved')"
@@ -248,7 +265,11 @@ def test_non_approver_sees_no_approve_button(page, server_url):
     go_home(page, server_url)
     act_as(page, "Bob")
     page.locator("#requests-table tbody tr", has_text="REQ-002").click()
-    page.wait_for_selector("#tab-detail.active")
+    wait_for_detail(page, "REQ-002")
+    # Wait for renderDetail to finish populating the actions container
+    page.wait_for_function(
+        "() => document.querySelector('#detail-body')?.innerText?.includes('Submitted')"
+    )
     assert page.locator("#detail-actions button", has_text="Approve").count() == 0
     assert page.locator("#detail-actions button", has_text="Reject").count() == 0
 
@@ -258,7 +279,9 @@ def test_owner_sees_edit_and_submit_on_draft(page, server_url):
     go_home(page, server_url)
     act_as(page, "Alice")
     page.locator("#requests-table tbody tr", has_text="REQ-001").click()
-    page.wait_for_selector("#tab-detail.active")
+    wait_for_detail(page, "REQ-001")
+    # Wait for the async renderDetail() to populate the action buttons
+    page.wait_for_selector("#detail-actions button")
     assert page.locator("#detail-actions button", has_text="Edit").count() == 1
     assert page.locator("#detail-actions button", has_text="Submit").count() == 1
 
@@ -268,6 +291,10 @@ def test_non_owner_cannot_edit_draft(page, server_url):
     go_home(page, server_url)
     act_as(page, "Bob")
     page.locator("#requests-table tbody tr", has_text="REQ-001").click()
-    page.wait_for_selector("#tab-detail.active")
+    wait_for_detail(page, "REQ-001")
+    # Wait for detail to be fully rendered (status appears in body)
+    page.wait_for_function(
+        "() => document.querySelector('#detail-body')?.innerText?.includes('Draft')"
+    )
     assert page.locator("#detail-actions button", has_text="Edit").count() == 0
     assert page.locator("#detail-actions button", has_text="Submit").count() == 0

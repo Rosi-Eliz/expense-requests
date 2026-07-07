@@ -7,13 +7,48 @@ frontend, in-memory store seeded from `data/*.json`.
 
 ```bash
 python3 -m venv .venv
-.venv/bin/pip install flask
+.venv/bin/pip install -r requirements.txt
 .venv/bin/python app.py          # listens on 127.0.0.1:5050 (PORT env to override)
 ```
 
 Then open <http://127.0.0.1:5050/> and pick a user from the "Acting as" dropdown
 at the top right. Everything is in memory — restarting the server resets state
 back to the seed data.
+
+## Tests
+
+Two suites, both under `tests/`:
+
+- **`tests/test_backend.py`** — 39 tests using Flask's `test_client` against the
+  in-memory store. Covers validation rules, permissions, approver routing,
+  status derivation, sanitizer behavior, and full happy-path lifecycles.
+- **`tests/test_frontend.py`** — 13 end-to-end Playwright tests. Spawns the
+  Flask app as a subprocess on a free port with `EXPENSE_TEST_MODE=1` (which
+  enables `POST /api/_test/reset`) and drives the SPA in headless Chromium.
+
+One-time Playwright browser install:
+
+```bash
+.venv/bin/python -m playwright install chromium
+```
+
+Run everything:
+
+```bash
+.venv/bin/python -m pytest tests/
+```
+
+Run just one suite:
+
+```bash
+.venv/bin/python -m pytest tests/test_backend.py
+.venv/bin/python -m pytest tests/test_frontend.py
+```
+
+The `/api/_test/reset` endpoint is gated by the `EXPENSE_TEST_MODE` env var so
+it's off in normal use — the frontend fixture sets it when it spawns the
+subprocess. `reset_store()` re-seeds `USERS` / `REQUESTS` via slice-assign so
+already-imported list references stay valid across tests.
 
 ## Design choices & tradeoffs
 
@@ -70,7 +105,10 @@ their respective inputs; a "please fix highlighted fields" line summarizes.
 **What I did *not* build** — the stretch items. I stuck to the core list.
 Where I could see a stretch path clearly, it's noted below.
 
-## What I tested (via curl, before demoing the UI)
+## What the tests cover
+
+The scenarios exercised by the backend and frontend suites (see the `Tests`
+section above for how to run them):
 
 - Empty submit returns `{errors: {expenseType, amountCents, description}}` with 400.
 - Small-amount routes to manager (Alice → Carol).
@@ -123,9 +161,7 @@ depending on whether it's a general or field-level problem.
    role-scoped view could hide unrelated ones or mark them read-only.
 5. **Real persistence** — swap the two module-level lists for SQLite via
    `sqlite3` stdlib; the event-log shape maps cleanly to a table.
-6. **Tests** — the curl script in the "What I tested" section is the seed of a
-   `pytest` file. Would use Flask's `test_client` and hit each rule as a table.
-7. **Real auth** — the `X-User-Id` header is the seam; the rest of the app
+6. **Real auth** — the `X-User-Id` header is the seam; the rest of the app
    doesn't care where the identity came from.
 
 ## AI assistance
