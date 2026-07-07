@@ -6,7 +6,10 @@
       "expenseType": "Travel",
       "amountCents": 45000,
       "description": "Customer onsite in Chicago",
-      "billable": false
+      "billable": false,
+      "destination": "Chicago, IL",
+      "departDate": "2026-06-10",
+      "returnDate": "2026-06-12"
     },
     "events": [
       { "type": "created", "at": "2026-05-01T09:00:00.000Z", "actorId": "u_alice" }
@@ -34,7 +37,9 @@
       "amountCents": 125000,
       "description": "Annual design-tool renewal",
       "billable": false,
-      "additionalJustification": "Replaces three monthly subscriptions; cheaper annually"
+      "additionalJustification": "Replaces three monthly subscriptions; cheaper annually",
+      "vendor": "Figma",
+      "softwareReason": "Team-wide design and prototyping tool; already in use trial"
     },
     "events": [
       { "type": "created",   "at": "2026-05-03T10:00:00.000Z", "actorId": "u_bob" },
@@ -50,7 +55,10 @@
       "amountCents": 60000,
       "description": "Team offsite venue deposit",
       "billable": true,
-      "client": "Acme"
+      "client": "Acme",
+      "destination": "Austin, TX",
+      "departDate": "2026-07-14",
+      "returnDate": "2026-07-16"
     },
     "events": [
       { "type": "created", "at": "2026-05-04T13:00:00.000Z", "actorId": "u_mallory" }

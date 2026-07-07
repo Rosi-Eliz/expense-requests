@@ -26,6 +26,20 @@ CLIENTS = ["Acme", "Globex", "Initech", "Umbrella", "Wayne Enterprises"]
 EXPENSE_TYPES = ["Travel", "Software", "Equipment", "Meal", "Other"]
 LARGE_AMOUNT_CENTS = 100_000  # $1,000 threshold for finance routing / extra justification
 
+# Per-expense-type extra fields. Rendered by the SPA, validated on the server.
+# Keeping the schema in one place so the two sides can't drift.
+TYPE_FIELDS: dict[str, list[dict]] = {
+    "Travel": [
+        {"key": "destination", "label": "Destination", "type": "text"},
+        {"key": "departDate", "label": "Departure date", "type": "date"},
+        {"key": "returnDate", "label": "Return date", "type": "date"},
+    ],
+    "Software": [
+        {"key": "vendor", "label": "Vendor", "type": "text"},
+        {"key": "softwareReason", "label": "Reason for this software", "type": "textarea"},
+    ],
+}
+
 app = Flask(__name__, static_folder=None)
 _lock = threading.Lock()
 
@@ -158,6 +172,28 @@ def validate_values(values: dict) -> dict[str, str]:
         if not v.get("otherReason") or not str(v["otherReason"]).strip():
             errors["otherReason"] = "Please describe why this is 'Other'."
 
+    if etype == "Travel":
+        if not v.get("destination") or not str(v["destination"]).strip():
+            errors["destination"] = "Destination is required for travel."
+        depart = v.get("departDate")
+        ret = v.get("returnDate")
+        if not depart:
+            errors["departDate"] = "Departure date is required for travel."
+        elif not _iso_date(depart):
+            errors["departDate"] = "Departure date must be YYYY-MM-DD."
+        if not ret:
+            errors["returnDate"] = "Return date is required for travel."
+        elif not _iso_date(ret):
+            errors["returnDate"] = "Return date must be YYYY-MM-DD."
+        if _iso_date(depart) and _iso_date(ret) and ret < depart:
+            errors["returnDate"] = "Return date cannot be before departure date."
+
+    if etype == "Software":
+        if not v.get("vendor") or not str(v["vendor"]).strip():
+            errors["vendor"] = "Vendor is required for software."
+        if not v.get("softwareReason") or not str(v["softwareReason"]).strip():
+            errors["softwareReason"] = "Please explain why this software is needed."
+
     return errors
 
 
@@ -210,6 +246,7 @@ def meta():
         "expenseTypes": EXPENSE_TYPES,
         "clients": CLIENTS,
         "largeAmountCents": LARGE_AMOUNT_CENTS,
+        "typeFields": TYPE_FIELDS,
     })
 
 
@@ -372,7 +409,23 @@ def _decide(rid: str, decision: str):
 _ALLOWED_VALUE_KEYS = {
     "expenseType", "amountCents", "description",
     "billable", "client", "additionalJustification", "otherReason",
+    # Type-specific fields (see TYPE_FIELDS)
+    "destination", "departDate", "returnDate",  # Travel
+    "vendor", "softwareReason",                 # Software
 }
+
+
+_TYPE_SPECIFIC_KEYS = {k for fields in TYPE_FIELDS.values() for k in (f["key"] for f in fields)}
+
+
+def _iso_date(s) -> bool:
+    if not isinstance(s, str):
+        return False
+    try:
+        datetime.strptime(s, "%Y-%m-%d")
+        return True
+    except ValueError:
+        return False
 
 
 def _sanitize_values(values: dict) -> dict:
@@ -392,6 +445,11 @@ def _sanitize_values(values: dict) -> dict:
     amt = out.get("amountCents")
     if not (isinstance(amt, int) and not isinstance(amt, bool) and amt >= LARGE_AMOUNT_CENTS):
         out.pop("additionalJustification", None)
+    # Drop type-specific fields that don't apply to the chosen expense type.
+    etype = out.get("expenseType")
+    keep_type_keys = {f["key"] for f in TYPE_FIELDS.get(etype, [])}
+    for k in _TYPE_SPECIFIC_KEYS - keep_type_keys:
+        out.pop(k, None)
     return out
 
 

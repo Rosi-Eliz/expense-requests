@@ -142,11 +142,17 @@ function currentFormValues() {
   v.amountCents = amountRaw === "" ? null : centsFromInput(amountRaw);
   v.description = f.elements.description.value;
   v.billable = f.elements.billable.checked;
+  // Only include conditional fields when their gate says they apply.
   if (v.billable) v.client = f.elements.client.value || null;
   if (v.expenseType === "Other") v.otherReason = f.elements.otherReason.value;
   if (v.amountCents != null && Number.isFinite(v.amountCents) && v.amountCents >= state.meta.largeAmountCents) {
     v.additionalJustification = f.elements.additionalJustification.value;
   }
+  // Type-specific fields
+  const typeSpec = (state.meta.typeFields || {})[v.expenseType] || [];
+  typeSpec.forEach((field) => {
+    if (f.elements[field.key]) v[field.key] = f.elements[field.key].value;
+  });
   return v;
 }
 
@@ -160,10 +166,7 @@ function renderForm(prefill) {
   const values = prefill ?? (state.editing ? state.editing.values : {});
   const f = document.getElementById("request-form");
   const large = state.meta.largeAmountCents;
-  const isOther = values.expenseType === "Other";
-  const isBillable = !!values.billable;
   const amtDollars = values.amountCents == null || values.amountCents === "" ? "" : (values.amountCents / 100).toFixed(2);
-  const showJust = Number.isFinite(Number(values.amountCents)) && Number(values.amountCents) >= large;
 
   f.innerHTML = `
     <div class="field" data-field="expenseType">
@@ -187,11 +190,11 @@ function renderForm(prefill) {
     </div>
     <div class="field" data-field="billable">
       <label style="flex-direction: row; align-items: center; gap: 6px;">
-        <input type="checkbox" name="billable"${isBillable ? " checked" : ""} />
+        <input type="checkbox" name="billable"${values.billable ? " checked" : ""} />
         Billable to a client?
       </label>
     </div>
-    <div class="field" data-field="client" style="${isBillable ? "" : "display:none"}">
+    <div class="field" data-field="client">
       <label>Client *
         <select name="client">
           <option value="">— select —</option>
@@ -199,31 +202,74 @@ function renderForm(prefill) {
         </select>
       </label>
     </div>
-    <div class="field" data-field="otherReason" style="${isOther ? "" : "display:none"}">
+    <div class="field" data-field="otherReason">
       <label>Other reason *
         <input type="text" name="otherReason" value="${escapeHtml(values.otherReason || "")}" />
       </label>
     </div>
-    <div class="field" data-field="additionalJustification" style="${showJust ? "" : "display:none"}">
+    <div class="field" data-field="additionalJustification">
       <label>Extra justification * <span class="hint">(required at $${(large / 100).toFixed(0)} or more)</span>
         <textarea name="additionalJustification">${escapeHtml(values.additionalJustification || "")}</textarea>
       </label>
     </div>
+    ${renderTypeFieldsHtml(values)}
   `;
 
-  // Wire conditionals: re-render on relevant changes
-  ["expenseType", "billable", "amountCents"].forEach((name) => {
-    f.elements[name].addEventListener("change", () => renderForm(currentFormValues()));
-  });
-  f.elements.amountCents.addEventListener("input", () => {
-    // Re-render only when crossing the threshold, to avoid stealing focus
-    const cur = centsFromInput(f.elements.amountCents.value);
-    const showing = f.querySelector('[data-field="additionalJustification"]').style.display !== "none";
-    const shouldShow = Number.isFinite(cur) && cur >= large;
-    if (showing !== shouldShow) renderForm(currentFormValues());
-  });
+  // Toggle conditional visibility on relevant events — no re-render, so
+  // in-flight typing in other fields is preserved.
+  const toggleConditionals = () => updateConditionalVisibility(f);
+  f.elements.expenseType.addEventListener("change", toggleConditionals);
+  f.elements.billable.addEventListener("change", toggleConditionals);
+  f.elements.amountCents.addEventListener("input", toggleConditionals);
+  toggleConditionals();
 
   document.getElementById("form-error").textContent = "";
+}
+
+function updateConditionalVisibility(f) {
+  const large = state.meta.largeAmountCents;
+  const isBillable = f.elements.billable.checked;
+  const etype = f.elements.expenseType.value;
+  const isOther = etype === "Other";
+  const cur = centsFromInput(f.elements.amountCents.value);
+  const showJust = Number.isFinite(cur) && cur >= large;
+
+  f.querySelector('[data-field="client"]').style.display = isBillable ? "" : "none";
+  f.querySelector('[data-field="otherReason"]').style.display = isOther ? "" : "none";
+  f.querySelector('[data-field="additionalJustification"]').style.display = showJust ? "" : "none";
+
+  // Show only the type-specific fields for the selected expense type.
+  const typeFields = state.meta.typeFields || {};
+  Object.entries(typeFields).forEach(([type, fields]) => {
+    fields.forEach((field) => {
+      const el = f.querySelector(`[data-field="${field.key}"]`);
+      if (el) el.style.display = etype === type ? "" : "none";
+    });
+  });
+}
+
+function renderTypeFieldsHtml(values) {
+  const typeFields = state.meta.typeFields || {};
+  const parts = [];
+  Object.entries(typeFields).forEach(([, fields]) => {
+    fields.forEach((field) => {
+      const v = values[field.key] || "";
+      let input;
+      if (field.type === "textarea") {
+        input = `<textarea name="${field.key}">${escapeHtml(v)}</textarea>`;
+      } else {
+        input = `<input type="${field.type}" name="${field.key}" value="${escapeHtml(v)}" />`;
+      }
+      parts.push(`
+        <div class="field" data-field="${field.key}">
+          <label>${escapeHtml(field.label)} *
+            ${input}
+          </label>
+        </div>
+      `);
+    });
+  });
+  return parts.join("");
 }
 
 function escapeHtml(s) {
@@ -299,6 +345,11 @@ async function renderDetail() {
   const r = await api(`/api/requests/${state.detailId}`);
   document.getElementById("detail-title").textContent = `${r.id} — ${r.values.expenseType || "(no type)"}`;
   const body = document.getElementById("detail-body");
+  const typeSpec = (state.meta.typeFields || {})[r.values.expenseType] || [];
+  const typeRows = typeSpec
+    .filter((field) => r.values[field.key])
+    .map((field) => `<dt>${escapeHtml(field.label)}</dt><dd>${escapeHtml(String(r.values[field.key]))}</dd>`)
+    .join("");
   body.innerHTML = `
     <dl>
       <dt>Status</dt><dd><span class="status status-${r.status}">${r.status}</span></dd>
@@ -308,6 +359,7 @@ async function renderDetail() {
       ${r.values.billable ? `<dt>Client</dt><dd>${escapeHtml(r.values.client || "")}</dd>` : ""}
       ${r.values.otherReason ? `<dt>Other reason</dt><dd>${escapeHtml(r.values.otherReason)}</dd>` : ""}
       ${r.values.additionalJustification ? `<dt>Extra justification</dt><dd>${escapeHtml(r.values.additionalJustification)}</dd>` : ""}
+      ${typeRows}
       ${r.currentApproverId ? `<dt>Awaiting</dt><dd>${userName(r.currentApproverId)}</dd>` : ""}
     </dl>
   `;

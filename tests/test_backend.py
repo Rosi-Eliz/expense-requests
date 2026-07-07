@@ -190,6 +190,7 @@ def test_billable_requires_client(client):
     draft = create_draft(client, "u_alice", {
         "expenseType": "Travel", "amountCents": 500, "description": "trip",
         "billable": True,
+        "destination": "NYC", "departDate": "2026-08-01", "returnDate": "2026-08-03",
     })
     r = client.post(f"/api/requests/{draft['id']}/submit", headers=as_("u_alice"))
     assert r.status_code == 400
@@ -200,6 +201,7 @@ def test_billable_with_unknown_client_is_400(client):
     draft = create_draft(client, "u_alice", {
         "expenseType": "Travel", "amountCents": 500, "description": "trip",
         "billable": True, "client": "NotAClient",
+        "destination": "NYC", "departDate": "2026-08-01", "returnDate": "2026-08-03",
     })
     r = client.post(f"/api/requests/{draft['id']}/submit", headers=as_("u_alice"))
     assert r.status_code == 400
@@ -230,6 +232,7 @@ def test_amount_999_dollars_is_not_large(client):
     draft = create_draft(client, "u_alice", {
         "expenseType": "Software", "amountCents": 99_999,
         "description": "just under the line",
+        "vendor": "Acme Inc.", "softwareReason": "Team collaboration",
     })
     r = client.post(f"/api/requests/{draft['id']}/submit", headers=as_("u_alice"))
     assert r.status_code == 200
@@ -263,6 +266,7 @@ def test_large_amount_routes_to_finance(client):
         "expenseType": "Software", "amountCents": 500_000,
         "description": "big buy",
         "additionalJustification": "annual license",
+        "vendor": "Acme Inc.", "softwareReason": "team-wide productivity tool",
     })
     r = client.post(f"/api/requests/{draft['id']}/submit", headers=as_("u_alice")).get_json()
     assert r["currentApproverId"] == "u_trent"
@@ -282,6 +286,7 @@ def test_finance_cannot_approve_own_large_request(client):
     draft = create_draft(client, "u_trent", {
         "expenseType": "Software", "amountCents": 500_000,
         "description": "tool", "additionalJustification": "needed",
+        "vendor": "Acme Inc.", "softwareReason": "internal tooling",
     })
     r = client.post(f"/api/requests/{draft['id']}/submit", headers=as_("u_trent"))
     assert r.status_code == 409
@@ -370,6 +375,82 @@ def test_sanitizer_rejects_unknown_keys(client):
         "description": "lunch", "secretFlag": True,
     })
     assert "secretFlag" not in draft["values"]
+
+
+# ---------------------------------------------------------------------------
+# Type-specific fields (Travel, Software)
+# ---------------------------------------------------------------------------
+
+def test_meta_exposes_type_fields(client):
+    body = client.get("/api/meta").get_json()
+    assert "typeFields" in body
+    assert "Travel" in body["typeFields"]
+    keys = {f["key"] for f in body["typeFields"]["Travel"]}
+    assert keys == {"destination", "departDate", "returnDate"}
+    sw_keys = {f["key"] for f in body["typeFields"]["Software"]}
+    assert sw_keys == {"vendor", "softwareReason"}
+
+
+def test_travel_requires_type_specific_fields(client):
+    draft = create_draft(client, "u_alice", {
+        "expenseType": "Travel", "amountCents": 500, "description": "trip",
+    })
+    r = client.post(f"/api/requests/{draft['id']}/submit", headers=as_("u_alice"))
+    assert r.status_code == 400
+    errors = r.get_json()["errors"]
+    assert "destination" in errors and "departDate" in errors and "returnDate" in errors
+
+
+def test_travel_rejects_return_before_depart(client):
+    draft = create_draft(client, "u_alice", {
+        "expenseType": "Travel", "amountCents": 500, "description": "trip",
+        "destination": "NYC", "departDate": "2026-08-05", "returnDate": "2026-08-01",
+    })
+    r = client.post(f"/api/requests/{draft['id']}/submit", headers=as_("u_alice"))
+    assert r.status_code == 400
+    assert "returnDate" in r.get_json()["errors"]
+
+
+def test_travel_rejects_bad_date_format(client):
+    draft = create_draft(client, "u_alice", {
+        "expenseType": "Travel", "amountCents": 500, "description": "trip",
+        "destination": "NYC", "departDate": "08/01/2026", "returnDate": "2026-08-05",
+    })
+    r = client.post(f"/api/requests/{draft['id']}/submit", headers=as_("u_alice"))
+    assert r.status_code == 400
+    assert "departDate" in r.get_json()["errors"]
+
+
+def test_software_requires_type_specific_fields(client):
+    draft = create_draft(client, "u_alice", {
+        "expenseType": "Software", "amountCents": 500, "description": "tool",
+    })
+    r = client.post(f"/api/requests/{draft['id']}/submit", headers=as_("u_alice"))
+    assert r.status_code == 400
+    errors = r.get_json()["errors"]
+    assert "vendor" in errors and "softwareReason" in errors
+
+
+def test_sanitizer_drops_type_fields_for_other_types(client):
+    """Software fields should not persist on a Meal draft."""
+    draft = create_draft(client, "u_alice", {
+        "expenseType": "Meal", "amountCents": 500, "description": "lunch",
+        "vendor": "Nope", "softwareReason": "Nope", "destination": "Nope",
+    })
+    assert "vendor" not in draft["values"]
+    assert "softwareReason" not in draft["values"]
+    assert "destination" not in draft["values"]
+
+
+def test_sanitizer_drops_travel_fields_when_switched_to_software(client):
+    """Switching expense type should drop stale type fields."""
+    draft = create_draft(client, "u_alice", {
+        "expenseType": "Software", "amountCents": 500, "description": "tool",
+        "destination": "NYC", "departDate": "2026-08-01", "returnDate": "2026-08-03",
+        "vendor": "Acme", "softwareReason": "productivity",
+    })
+    assert "destination" not in draft["values"]
+    assert "vendor" in draft["values"]
 
 
 # ---------------------------------------------------------------------------
